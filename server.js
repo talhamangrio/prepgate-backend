@@ -11,6 +11,7 @@ app.use(express.json());
 // Routes
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/exam', require('./routes/exam'));
+app.use('/api/admin', require('./routes/admin'));
 
 // Test route
 app.get('/', (req, res) => {
@@ -26,3 +27,4 @@ mongoose.connect(process.env.MONGO_URI)
     });
   })
   .catch(err => console.log('❌ Error:', err));
+
