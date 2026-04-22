@@ -23,7 +23,7 @@ const auth = (req, res, next) => {
 router.get('/questions/:level', auth, async (req, res) => {
   try {
     const questions = await Question.find({ level: req.params.level })
-  .sort({ section: 1, order: 1 });
+      .sort({ section: 1, order: 1 });
     res.json(questions);
   } catch (err) {
     res.status(500).json({ message: 'Server error' });
@@ -100,9 +100,10 @@ router.post('/submit', auth, async (req, res) => {
     const percentage = Math.round((totalCorrect / totalQuestions) * 100);
 
     // Save attempt
+    const earnedScore = req.body.totalScore || totalCorrect;
     const attempt = new Attempt({
       user: user._id, level,
-      score: totalCorrect,
+      score: earnedScore,
       percentage,
       englishScore, mathsScore, iqScore
     });
@@ -112,7 +113,7 @@ router.post('/submit', auth, async (req, res) => {
     user[attemptField] += 1;
     if (percentage >= 60 && level === 1) user.level2Unlocked = true;
     if (percentage >= 70 && level === 2) user.level3Unlocked = true;
-    if (totalCorrect > user.totalScore) user.totalScore = totalCorrect;
+    if (earnedScore > user.totalScore) user.totalScore = earnedScore;
     await user.save();
 
     // Mark session complete
@@ -121,7 +122,7 @@ router.post('/submit', auth, async (req, res) => {
       { completed: true }
     );
 
-    res.json({ totalCorrect, percentage, englishScore, mathsScore, iqScore, user });
+    res.json({ totalCorrect, percentage, englishScore, mathsScore, iqScore, user, earnedScore });
   } catch (err) {
     res.status(500).json({ message: 'Server error' });
   }
