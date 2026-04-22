@@ -23,8 +23,7 @@ const auth = (req, res, next) => {
 router.get('/questions/:level', auth, async (req, res) => {
   try {
     const questions = await Question.find({ level: req.params.level })
-      .select('-correct')
-      .sort({ section: 1, order: 1 });
+  .sort({ section: 1, order: 1 });
     res.json(questions);
   } catch (err) {
     res.status(500).json({ message: 'Server error' });
