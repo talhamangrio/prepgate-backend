@@ -3,7 +3,10 @@ const router = express.Router();
 const User = require('../models/User');
 const Attempt = require('../models/Attempt');
 const Question = require('../models/Question');
+const Test = require('../models/Test');
 const Announcement = require('../models/Announcement');
+const { SUBJECTS } = require('../constants/subjects');
+const { parseCsvWithHeaders } = require('../utils/csv');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 
@@ -21,7 +24,9 @@ const adminAuth = (req, res, next) => {
   }
 };
 
+// ---------------------------------------------------------------
 // Admin Login
+// ---------------------------------------------------------------
 router.post('/login', async (req, res) => {
   const { email, password } = req.body;
   const adminEmail = process.env.ADMIN_EMAIL || 'admin@prepgate.com';
@@ -33,145 +38,324 @@ router.post('/login', async (req, res) => {
   res.json({ token });
 });
 
-// Stats
+// ---------------------------------------------------------------
+// Stats (kept for the dashboard overview tab)
+// ---------------------------------------------------------------
 router.get('/stats', adminAuth, async (req, res) => {
   try {
     const totalUsers = await User.countDocuments();
     const totalAttempts = await Attempt.countDocuments();
     const totalQuestions = await Question.countDocuments();
-    const passed = await Attempt.countDocuments({ percentage: { $gte: 60 } });
-    const passRate = totalAttempts > 0 ? Math.round((passed / totalAttempts) * 100) : 0;
-    res.json({ totalUsers, totalAttempts, totalQuestions, passRate });
+    const totalTests = await Test.countDocuments();
+    res.json({ totalUsers, totalAttempts, totalQuestions, totalTests });
   } catch (err) {
     res.status(500).json({ message: 'Server error' });
   }
 });
 
-// Get all users
-router.get('/users', adminAuth, async (req, res) => {
+// ---------------------------------------------------------------
+// Subjects (for the admin UI dropdown)
+// ---------------------------------------------------------------
+router.get('/subjects', adminAuth, (req, res) => {
+  res.json({ subjects: SUBJECTS });
+});
+
+// ---------------------------------------------------------------
+// Test CRUD
+// ---------------------------------------------------------------
+
+// List all tests
+router.get('/tests', adminAuth, async (req, res) => {
   try {
-    const users = await User.find().select('-password').sort({ createdAt: -1 });
-    res.json(users);
+    const tests = await Test.find()
+      .select('-__v')
+      .sort({ subject: 1, createdAt: 1 });
+    res.json(tests);
   } catch (err) {
     res.status(500).json({ message: 'Server error' });
   }
 });
 
-// Delete user
-router.delete('/users/:id', adminAuth, async (req, res) => {
+// Create test
+router.post('/tests', adminAuth, async (req, res) => {
   try {
-    await User.findByIdAndDelete(req.params.id);
-    await Attempt.deleteMany({ user: req.params.id });
-    res.json({ message: 'User deleted' });
+    const { name, subject, durationSec } = req.body;
+    if (!name || !subject) {
+      return res.status(400).json({ message: 'name and subject required' });
+    }
+    if (!SUBJECTS.includes(subject)) {
+      return res.status(400).json({ message: `subject must be one of: ${SUBJECTS.join(', ')}` });
+    }
+    const test = new Test({
+      name: String(name).trim(),
+      subject,
+      durationSec: Number.isFinite(durationSec) && durationSec >= 60 ? Number(durationSec) : 3000,
+      totalQuestions: 0
+    });
+    await test.save();
+    res.json(test);
   } catch (err) {
     res.status(500).json({ message: 'Server error' });
   }
 });
 
-// Get all questions
-router.get('/questions', adminAuth, async (req, res) => {
+// Update test metadata (name, duration, active, subject)
+router.patch('/tests/:id', adminAuth, async (req, res) => {
   try {
-    const questions = await Question.find().sort({ level: 1, order: 1 });
+    const update = {};
+    const allowed = ['name', 'subject', 'durationSec', 'active'];
+    allowed.forEach(f => {
+      if (req.body[f] !== undefined) update[f] = req.body[f];
+    });
+    if (update.subject && !SUBJECTS.includes(update.subject)) {
+      return res.status(400).json({ message: `subject must be one of: ${SUBJECTS.join(', ')}` });
+    }
+    if (update.durationSec !== undefined && (update.durationSec < 60)) {
+      return res.status(400).json({ message: 'durationSec must be >= 60' });
+    }
+    const test = await Test.findByIdAndUpdate(req.params.id, { $set: update }, { new: true });
+    if (!test) return res.status(404).json({ message: 'Test not found' });
+    res.json(test);
+  } catch (err) {
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Delete test AND its questions + attempts + sessions
+router.delete('/tests/:id', adminAuth, async (req, res) => {
+  try {
+    const test = await Test.findByIdAndDelete(req.params.id);
+    if (!test) return res.status(404).json({ message: 'Test not found' });
+    await Question.deleteMany({ test: test._id });
+    await Attempt.deleteMany({ test: test._id });
+    const Session = require('../models/Session');
+    await Session.deleteMany({ test: test._id });
+    res.json({ message: `Test '${test.name}' and all its questions, attempts, sessions deleted.` });
+  } catch (err) {
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// List questions for a test (paginated; admin can see correct answers)
+router.get('/tests/:testId/questions', adminAuth, async (req, res) => {
+  try {
+    const questions = await Question.find({ test: req.params.testId })
+      .sort({ order: 1, _id: 1 })
+      .select('-__v');
     res.json(questions);
   } catch (err) {
     res.status(500).json({ message: 'Server error' });
   }
 });
 
-// Delete all questions for a level
-router.delete('/questions/level/:level', adminAuth, async (req, res) => {
+// ---------------------------------------------------------------
+// Bulk question upload (CSV)
+// ---------------------------------------------------------------
+//
+// Expected CSV format (header row required):
+//   question,A,B,C,D,correct,passage,explanation
+//
+// - `correct` must be one of A/B/C/D (case-insensitive, normalised to upper)
+// - `passage` and `explanation` are optional (leave empty)
+// - Fields may be quoted with " for embedded commas, quotes (doubled), or
+//   newlines (RFC 4180 standard).
+// - LaTeX is supported in any text field, delimited by $...$ or $$...$$,
+//   rendered by KaTeX on the frontend (unchanged from before).
+//
+// Upload REPLACES the test's existing questions.
+router.post('/tests/:testId/questions/bulk', adminAuth, async (req, res) => {
   try {
-    await Question.deleteMany({ level: parseInt(req.params.level) });
-    res.json({ message: `Level ${req.params.level} questions deleted` });
+    const test = await Test.findById(req.params.testId);
+    if (!test) return res.status(404).json({ message: 'Test not found' });
+
+    const { csv } = req.body;
+    if (!csv || !csv.trim()) {
+      return res.status(400).json({ message: 'csv (string) required in body' });
+    }
+
+    const { rows, errors } = parseCsvWithHeaders(csv,
+      ['question', 'A', 'B', 'C', 'D', 'correct']);
+    if (errors.length) {
+      return res.status(400).json({ message: errors[0].message });
+    }
+    if (!rows.length) {
+      return res.status(400).json({ message: 'No question rows found in CSV.' });
+    }
+
+    // Validate each row
+    const validationErrors = [];
+    const docs = [];
+    rows.forEach((r, i) => {
+      const correct = (r.correct || '').toUpperCase();
+      if (!['A', 'B', 'C', 'D'].includes(correct)) {
+        validationErrors.push({ row: r._rowNum, message: `correct must be A/B/C/D, got '${r.correct}'` });
+        return;
+      }
+      if (!r.question || !r.A || !r.B || !r.C || !r.D) {
+        validationErrors.push({ row: r._rowNum, message: 'question and all 4 options (A,B,C,D) are required' });
+        return;
+      }
+      docs.push({
+        test: test._id,
+        subject: test.subject,
+        question: r.question,
+        options: { A: r.A, B: r.B, C: r.C, D: r.D },
+        correct,
+        passage: r.passage || null,
+        explanation: r.explanation || null,
+        order: i
+      });
+    });
+
+    if (validationErrors.length) {
+      return res.status(400).json({
+        message: `Validation failed for ${validationErrors.length} row(s).`,
+        errors: validationErrors.slice(0, 20)  // cap to first 20 for response size
+      });
+    }
+
+    // Replace existing questions for this test
+    await Question.deleteMany({ test: test._id });
+    await Question.insertMany(docs);
+
+    // Update denormalised count on the test
+    test.totalQuestions = docs.length;
+    test.updatedAt = Date.now();
+    await test.save();
+
+    res.json({
+      message: `Uploaded ${docs.length} questions for '${test.name}'.`,
+      count: docs.length
+    });
   } catch (err) {
-    res.status(500).json({ message: 'Server error' });
+    console.error('Bulk upload error:', err);
+    res.status(500).json({ message: 'Server error during upload' });
   }
 });
 
-// Delete single question
+// Delete a single question
 router.delete('/questions/:id', adminAuth, async (req, res) => {
   try {
-    await Question.findByIdAndDelete(req.params.id);
+    const q = await Question.findByIdAndDelete(req.params.id);
+    if (!q) return res.status(404).json({ message: 'Question not found' });
+    // Keep Test.totalQuestions roughly in sync
+    if (q.test) {
+      await Test.updateOne(
+        { _id: q.test },
+        { $set: { totalQuestions: await Question.countDocuments({ test: q.test }) } }
+      );
+    }
     res.json({ message: 'Question deleted' });
   } catch (err) {
     res.status(500).json({ message: 'Server error' });
   }
 });
 
-// Batch upload questions (parse from text)
-router.post('/questions/batch', adminAuth, async (req, res) => {
+// ---------------------------------------------------------------
+// Rankings CSV download (per test)
+// ---------------------------------------------------------------
+//
+// Returns text/csv with columns:
+//   rank, name, correctCount, totalQuestions, timeTakenSeconds, submittedAt
+// Sorted the same way as the ranking view: correctCount desc,
+// timeTakenSeconds asc, submittedAt asc.
+router.get('/tests/:testId/rankings.csv', adminAuth, async (req, res) => {
   try {
-    const { level, rawText } = req.body;
-    if (!level || !rawText) return res.status(400).json({ message: 'Level and rawText required' });
+    const test = await Test.findById(req.params.testId).select('name subject totalQuestions');
+    if (!test) return res.status(404).json({ message: 'Test not found' });
 
-    const questions = parseQuestions(rawText, parseInt(level));
-    if (!questions.length) return res.status(400).json({ message: 'No questions parsed. Check format.' });
+    const attempts = await Attempt.find({ test: test._id })
+      .populate('user', 'name')
+      .sort({ correctCount: -1, timeTakenSeconds: 1, submittedAt: 1 });
 
-    // Delete existing questions for this level
-    await Question.deleteMany({ level: parseInt(level) });
+    const escape = (v) => {
+      if (v === null || v === undefined) return '';
+      const s = String(v);
+      if (/[",\n\r]/.test(s)) return '"' + s.replace(/"/g, '""') + '"';
+      return s;
+    };
 
-    // Insert new questions
-    await Question.insertMany(questions);
+    const header = ['rank', 'name', 'correctCount', 'totalQuestions', 'timeTakenSeconds', 'submittedAt'];
+    const lines = [header.join(',')];
+    attempts.forEach((a, idx) => {
+      const total = a.totalQuestions || test.totalQuestions || 0;
+      const time = a.timeTakenSeconds === null || a.timeTakenSeconds === undefined
+        ? '' : a.timeTakenSeconds;
+      const submittedAt = a.submittedAt || a.completedAt;
+      const iso = submittedAt ? new Date(submittedAt).toISOString() : '';
+      lines.push([
+        idx + 1,
+        escape(a.user?.name || 'Unknown'),
+        a.correctCount,
+        total,
+        time,
+        iso
+      ].join(','));
+    });
 
-    res.json({ message: 'Questions uploaded!', count: questions.length });
+    const filename = `rankings-${test.name.replace(/\s+/g, '_')}.csv`;
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.send(lines.join('\n'));
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: 'Server error during upload' });
+    console.error('CSV download error:', err);
+    res.status(500).json({ message: 'Server error' });
   }
 });
 
-// Parse questions from raw text format
-function parseQuestions(rawText, level) {
-  const questions = [];
-  
-  // Split by question patterns: Q1:, Q2:, 1., 2., etc.
-  const blocks = rawText.split(/\n(?=Q\d+:|^\d+\.|^\d+\))/m).filter(b => b.trim());
+// ---------------------------------------------------------------
+// Users (unchanged from before, minus level-attempt counts in response)
+// ---------------------------------------------------------------
+router.get('/users', adminAuth, async (req, res) => {
+  try {
+    const users = await User.find().select('-password').sort({ createdAt: -1 });
+    // Attach total attempt count via a separate query — cheap and avoids
+    // the old per-user level-counter fields that no longer exist.
+    const counts = await Attempt.aggregate([
+      { $group: { _id: '$user', count: { $sum: 1 } } }
+    ]);
+    const countMap = new Map(counts.map(c => [String(c._id), c.count]));
+    const enriched = users.map(u => ({
+      ...u.toObject(),
+      totalAttempts: countMap.get(String(u._id)) || 0
+    }));
+    res.json(enriched);
+  } catch (err) {
+    res.status(500).json({ message: 'Server error' });
+  }
+});
 
-  blocks.forEach((block, idx) => {
-    try {
-      const lines = block.split('\n').map(l => l.trim()).filter(l => l);
-      if (lines.length < 6) return;
+router.delete('/users/:id', adminAuth, async (req, res) => {
+  try {
+    await User.findByIdAndDelete(req.params.id);
+    await Attempt.deleteMany({ user: req.params.id });
+    const Session = require('../models/Session');
+    await Session.deleteMany({ user: req.params.id });
+    res.json({ message: 'User deleted' });
+  } catch (err) {
+    res.status(500).json({ message: 'Server error' });
+  }
+});
 
-      // Extract question text (first line, remove Q1: or 1. prefix)
-      let questionText = lines[0].replace(/^Q\d+:\s*|^\d+[\.\)]\s*/i, '').trim();
-      
-      // Find options
-      let optA = '', optB = '', optC = '', optD = '', correct = '';
-      
-      lines.forEach(line => {
-        const aMatch = line.match(/^A[\.\)]\s*(.+)/i);
-        const bMatch = line.match(/^B[\.\)]\s*(.+)/i);
-        const cMatch = line.match(/^C[\.\)]\s*(.+)/i);
-        const dMatch = line.match(/^D[\.\)]\s*(.+)/i);
-        const ansMatch = line.match(/^Answer:\s*([ABCD])/i);
-        
-        if (aMatch) optA = aMatch[1].trim();
-        if (bMatch) optB = bMatch[1].trim();
-        if (cMatch) optC = cMatch[1].trim();
-        if (dMatch) optD = dMatch[1].trim();
-        if (ansMatch) correct = ansMatch[1].toUpperCase();
-      });
+// ---------------------------------------------------------------
+// Legacy: all-questions endpoint (admin question-sets tab used this).
+// Kept for back-compat; returns questions grouped by test now.
+// ---------------------------------------------------------------
+router.get('/questions', adminAuth, async (req, res) => {
+  try {
+    const questions = await Question.find()
+      .populate('test', 'name subject')
+      .sort({ test: 1, order: 1, _id: 1 })
+      .select('-__v');
+    res.json(questions);
+  } catch (err) {
+    res.status(500).json({ message: 'Server error' });
+  }
+});
 
-      if (questionText && optA && optB && optC && optD && correct) {
-        questions.push({
-          university: 'SIBA',
-          level,
-          section: 'Maths',
-          question: questionText,
-          options: { A: optA, B: optB, C: optC, D: optD },
-          correct,
-          order: idx
-        });
-      }
-    } catch (e) {
-      console.warn('Skipped block:', e.message);
-    }
-  });
-
-  return questions;
-}
-
-// Announcements
+// ---------------------------------------------------------------
+// Announcements (unchanged)
+// ---------------------------------------------------------------
 router.get('/announcements', adminAuth, async (req, res) => {
   try {
     const announcements = await Announcement.find().sort({ createdAt: -1 });
