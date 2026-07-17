@@ -1,10 +1,9 @@
 const mongoose = require('mongoose');
-const { SUBJECTS } = require('../constants/subjects');
 
 /**
  * A single completed test attempt ("submission") by a user.
  *
- * Scoring (post-refactor):
+ * Scoring:
  * - Each correct answer = 1 mark. No negative marking, no speed bonus.
  * - `correctCount` is the canonical score field.
  * - `score` is kept (set equal to correctCount) for back-compat with any
@@ -14,22 +13,17 @@ const { SUBJECTS } = require('../constants/subjects');
  * - `startedAt` — ISO timestamp sent by the client when the test was started.
  * - `submittedAt` — server-set timestamp when /submit was called.
  * - `timeTakenSeconds` — derived: (submittedAt - startedAt) / 1000.
- *   For legacy attempts that predate these fields, this is null.
  *
  * Legacy fields kept for back-compat:
- * - `level` (Number) — was the test identifier. Optional now.
- * - `englishScore`, `mathsScore`, `iqScore` — per-section correct counts.
- *   Only populated for legacy attempts; new attempts leave them at 0 and
- *   use only `correctCount`.
- * - `percentage` — kept for the admin stats endpoint (pass-rate), still
- *   computed as round(correctCount / totalQuestions * 100).
+ * - `level`, `englishScore`, `mathsScore`, `iqScore`, `percentage`,
+ *   `completedAt`. None of these are read by current code paths.
  */
 const AttemptSchema = new mongoose.Schema({
   user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
   test: { type: mongoose.Schema.Types.ObjectId, ref: 'Test', index: true, default: null },
-  subject: { type: String, enum: SUBJECTS, default: null, index: true },
+  subject: { type: String, default: null, index: true },
 
-  // Canonical scoring (post-refactor)
+  // Canonical scoring
   correctCount: { type: Number, default: 0, min: 0 },
   totalQuestions: { type: Number, default: 0, min: 0 },
 
