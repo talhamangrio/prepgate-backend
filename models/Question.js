@@ -1,27 +1,25 @@
 const mongoose = require('mongoose');
-const { SUBJECTS } = require('../constants/subjects');
 
 /**
  * A single multiple-choice question.
  *
  * - `test` is the canonical reference to the Test this question belongs to.
- * - `subject` is denormalised onto the question so admin can filter the
- *   questions collection by subject without a join. It must match the test's
- *   subject (enforced at write time by the admin bulk-upload endpoint).
+ * - `subject` is denormalised onto the question (free-form string copied
+ *   from the parent Test at write time) so the admin can filter the
+ *   questions collection by subject without a join.
  *
  * Legacy fields kept for back-compat with pre-refactor data:
- * - `level` (Number) — was the only test identifier before the refactor.
- *   Now optional; new questions default to null. The migration script sets
- *   this to null on all existing docs after tagging them with `test`.
+ * - `level` (Number) — was the only test identifier before the v1 refactor.
  * - `section` (English/Maths/IQ) — was used for per-section scoring inside
- *   one multi-subject test. Now optional; new questions default to null.
- *   Kept because old Attempts still carry englishScore/mathsScore/iqScore
- *   breakdowns derived from it.
- * - `university` — legacy source field, kept as-is.
+ *   one multi-subject test.
+ * - `university` — legacy source field.
+ *
+ * None of these legacy fields are read by any current code path; they're
+ * preserved so old data remains inspectable in MongoDB Compass.
  */
 const QuestionSchema = new mongoose.Schema({
   test: { type: mongoose.Schema.Types.ObjectId, ref: 'Test', index: true, default: null },
-  subject: { type: String, enum: SUBJECTS, default: null, index: true },
+  subject: { type: String, default: null, index: true },
 
   // Legacy fields (kept for back-compat with pre-refactor data)
   university: { type: String, default: 'SIBA' },

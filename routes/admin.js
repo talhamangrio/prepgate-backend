@@ -5,7 +5,6 @@ const Attempt = require('../models/Attempt');
 const Question = require('../models/Question');
 const Test = require('../models/Test');
 const Announcement = require('../models/Announcement');
-const { SUBJECTS } = require('../constants/subjects');
 const { parseCsvWithHeaders } = require('../utils/csv');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
@@ -54,10 +53,16 @@ router.get('/stats', adminAuth, async (req, res) => {
 });
 
 // ---------------------------------------------------------------
-// Subjects (for the admin UI dropdown)
+// Subjects (dynamic — derived from the Test collection so admins can
+// invent new subjects freely without a code change)
 // ---------------------------------------------------------------
-router.get('/subjects', adminAuth, (req, res) => {
-  res.json({ subjects: SUBJECTS });
+router.get('/subjects', adminAuth, async (req, res) => {
+  try {
+    const subjects = await Test.distinct('subject');
+    res.json({ subjects: subjects.filter(Boolean).sort() });
+  } catch (err) {
+    res.status(500).json({ message: 'Server error' });
+  }
 });
 
 // ---------------------------------------------------------------
@@ -77,20 +82,28 @@ router.get('/tests', adminAuth, async (req, res) => {
 });
 
 // Create test
+//
+// Body: { name, subject, durationSec, status, scheduledAt }
+//   - subject: free-form string (e.g. 'MDCAT', 'ECAT', 'USAT')
+//   - status: 'coming_soon' | 'live' (default 'live')
+//   - scheduledAt: ISO date string — when the test goes live (cosmetic;
+//     admin still has to manually flip status to 'live')
 router.post('/tests', adminAuth, async (req, res) => {
   try {
-    const { name, subject, durationSec } = req.body;
+    const { name, subject, durationSec, status, scheduledAt } = req.body;
     if (!name || !subject) {
       return res.status(400).json({ message: 'name and subject required' });
     }
-    if (!SUBJECTS.includes(subject)) {
-      return res.status(400).json({ message: `subject must be one of: ${SUBJECTS.join(', ')}` });
+    if (status && !['coming_soon', 'live'].includes(status)) {
+      return res.status(400).json({ message: `status must be 'coming_soon' or 'live'` });
     }
     const test = new Test({
       name: String(name).trim(),
-      subject,
+      subject: String(subject).trim(),
       durationSec: Number.isFinite(durationSec) && durationSec >= 60 ? Number(durationSec) : 3000,
-      totalQuestions: 0
+      totalQuestions: 0,
+      status: status || 'live',
+      scheduledAt: scheduledAt ? new Date(scheduledAt) : null
     });
     await test.save();
     res.json(test);
@@ -99,20 +112,25 @@ router.post('/tests', adminAuth, async (req, res) => {
   }
 });
 
-// Update test metadata (name, duration, active, subject)
+// Update test metadata (name, duration, active, subject, status, scheduledAt)
 router.patch('/tests/:id', adminAuth, async (req, res) => {
   try {
     const update = {};
-    const allowed = ['name', 'subject', 'durationSec', 'active'];
+    const allowed = ['name', 'subject', 'durationSec', 'active', 'status', 'scheduledAt'];
     allowed.forEach(f => {
       if (req.body[f] !== undefined) update[f] = req.body[f];
     });
-    if (update.subject && !SUBJECTS.includes(update.subject)) {
-      return res.status(400).json({ message: `subject must be one of: ${SUBJECTS.join(', ')}` });
+    if (update.status && !['coming_soon', 'live'].includes(update.status)) {
+      return res.status(400).json({ message: `status must be 'coming_soon' or 'live'` });
     }
     if (update.durationSec !== undefined && (update.durationSec < 60)) {
       return res.status(400).json({ message: 'durationSec must be >= 60' });
     }
+    if (update.scheduledAt !== undefined) {
+      update.scheduledAt = update.scheduledAt ? new Date(update.scheduledAt) : null;
+    }
+    if (update.subject) update.subject = String(update.subject).trim();
+    if (update.name) update.name = String(update.name).trim();
     const test = await Test.findByIdAndUpdate(req.params.id, { $set: update }, { new: true });
     if (!test) return res.status(404).json({ message: 'Test not found' });
     res.json(test);
