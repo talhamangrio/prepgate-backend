@@ -1,15 +1,19 @@
 const mongoose = require('mongoose');
 
+/**
+ * A registered student.
+ *
+ * Post-refactor: level-gating fields (level1Attempts/level2Unlocked/etc.)
+ * have been removed. Any logged-in user can attempt any test, any number of
+ * times. Per-test attempt history lives on the Attempt collection.
+ *
+ * `totalScore` was a denormalised "best XP" used by the old site-wide
+ * leaderboard; it has been removed along with that leaderboard.
+ */
 const UserSchema = new mongoose.Schema({
-  name: { type: String, required: true },
-  email: { type: String, required: true, unique: true },
+  name: { type: String, required: true, trim: true },
+  email: { type: String, required: true, unique: true, lowercase: true, trim: true },
   password: { type: String, required: true },
-  totalScore: { type: Number, default: 0 },
-  level1Attempts: { type: Number, default: 0 },
-  level2Attempts: { type: Number, default: 0 },
-  level3Attempts: { type: Number, default: 0 },
-  level2Unlocked: { type: Boolean, default: false },
-  level3Unlocked: { type: Boolean, default: false },
   createdAt: { type: Date, default: Date.now }
 });
 
