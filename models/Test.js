@@ -2,9 +2,11 @@ const mongoose = require('mongoose');
 
 /**
  * A Test is a single takeable exam — e.g. "MDCAT Mock 1", "ECAT Physics Set 2",
- * "USAT English Diagnostic". Each test belongs to exactly one subject, but
- * the subject is now a free-form string set by the admin (no enum) — admins
- * can invent new subjects (MDCAT, ECAT, USAT, NUST, GIKI, ...) on the fly.
+ * "USAT English Diagnostic". The `subject` field is kept for backward
+ * compatibility with the v2 schema but is no longer surfaced in the admin UI —
+ * it defaults to 'General' and admins only set the test `name`. (The student-
+ * facing subject filter pills still work; they just show 'General' for every
+ * test unless an admin sets a different subject via the API directly.)
  *
  * Lifecycle / visibility:
  *
@@ -36,7 +38,7 @@ const mongoose = require('mongoose');
  */
 const TestSchema = new mongoose.Schema({
   name: { type: String, required: true, trim: true },
-  subject: { type: String, required: true, trim: true, index: true },
+  subject: { type: String, required: true, default: 'General', trim: true, index: true },
   durationSec: { type: Number, required: true, default: 3000, min: 60 },
   totalQuestions: { type: Number, default: 0, min: 0 },
   active: { type: Boolean, default: true, index: true },
