@@ -53,9 +53,11 @@ const TestSchema = new mongoose.Schema({
   updatedAt: { type: Date, default: Date.now }
 });
 
-TestSchema.pre('save', function (next) {
+// NOTE: Mongoose 9.x removed the callback-style `next` parameter from
+// middleware — pre hooks must be sync (no return) or async (return a Promise).
+// Using sync here since we only mutate `this.updatedAt`.
+TestSchema.pre('save', function () {
   this.updatedAt = Date.now();
-  next();
 });
 
 module.exports = mongoose.model('Test', TestSchema);
