@@ -83,23 +83,24 @@ router.get('/tests', adminAuth, async (req, res) => {
 
 // Create test
 //
-// Body: { name, subject, durationSec, status, scheduledAt }
-//   - subject: free-form string (e.g. 'MDCAT', 'ECAT', 'USAT')
+// Body: { name, durationSec, status, scheduledAt }
+//   - subject is no longer required from the client (defaults to 'General');
+//     it's still accepted for backward-compat with older admin UIs
 //   - status: 'coming_soon' | 'live' (default 'live')
 //   - scheduledAt: ISO date string — when the test goes live (cosmetic;
 //     admin still has to manually flip status to 'live')
 router.post('/tests', adminAuth, async (req, res) => {
   try {
     const { name, subject, durationSec, status, scheduledAt } = req.body;
-    if (!name || !subject) {
-      return res.status(400).json({ message: 'name and subject required' });
+    if (!name) {
+      return res.status(400).json({ message: 'name is required' });
     }
     if (status && !['coming_soon', 'live'].includes(status)) {
       return res.status(400).json({ message: `status must be 'coming_soon' or 'live'` });
     }
     const test = new Test({
       name: String(name).trim(),
-      subject: String(subject).trim(),
+      subject: String(subject || 'General').trim(),
       durationSec: Number.isFinite(durationSec) && durationSec >= 60 ? Number(durationSec) : 3000,
       totalQuestions: 0,
       status: status || 'live',
