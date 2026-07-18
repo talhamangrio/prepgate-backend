@@ -200,21 +200,80 @@ router.post('/submit', auth, async (req, res) => {
       }
     }
 
-    // Save attempt
-    const attempt = new Attempt({
-      user: user._id,
-      test: test._id,
-      subject: test.subject,
-      correctCount,
-      totalQuestions,
-      startedAt: startedAt || null,
-      submittedAt,
-      timeTakenSeconds,
-      score: correctCount,        // back-compat
-      percentage,
-      completedAt: submittedAt    // back-compat
-    });
-    await attempt.save();
+    // -----------------------------------------------------------------
+    // Best-score-only policy (one Attempt per user+test):
+    //
+    // The user's intent: "if a student gives the test twice and gets
+    // better marks than the first attempt, remove the old record and
+    // show the top score. If they attempt thrice, show only the highest
+    // score."
+    //
+    // Rule: keep ONLY the best attempt per (user, test). Replace the
+    // stored attempt only when the new submission is strictly better.
+    // Tie-breaker: equal score but faster time also wins (so the
+    // ranking's secondary sort by timeTakenSeconds asc stays honest).
+    // Otherwise discard the new submission and return the existing best.
+    // -----------------------------------------------------------------
+
+    const existing = await Attempt.find({ user: user._id, test: test._id })
+      .sort({ correctCount: -1, timeTakenSeconds: 1, submittedAt: 1 });
+
+    const best = existing[0];
+    let attempt;          // the Attempt doc we treat as "the" attempt for this user+test
+    let isNewBest = true; // did this submission become the stored best?
+
+    if (best) {
+      const newIsHigher = correctCount > best.correctCount;
+      const newEqualFaster =
+        correctCount === best.correctCount &&
+        (best.timeTakenSeconds == null ||
+          (timeTakenSeconds != null && timeTakenSeconds < best.timeTakenSeconds));
+
+      if (newIsHigher || newEqualFaster) {
+        // New submission wins — delete ALL previous attempts for this
+        // (user, test), then save the new one as the sole record.
+        await Attempt.deleteMany({ user: user._id, test: test._id });
+        attempt = new Attempt({
+          user: user._id,
+          test: test._id,
+          subject: test.subject,
+          correctCount,
+          totalQuestions,
+          startedAt: startedAt || null,
+          submittedAt,
+          timeTakenSeconds,
+          score: correctCount,        // back-compat
+          percentage,
+          completedAt: submittedAt    // back-compat
+        });
+        await attempt.save();
+        isNewBest = true;
+      } else {
+        // New submission is not better — discard it, keep the existing best.
+        // We still return the result of THIS submission to the candidate
+        // (so they see what they just got), but flag it so the client can
+        // show a "your previous best was higher" hint if it wants to.
+        attempt = best;
+        isNewBest = false;
+      }
+    } else {
+      // First attempt for this (user, test) — just save it.
+      attempt = new Attempt({
+        user: user._id,
+        test: test._id,
+        subject: test.subject,
+        correctCount,
+        totalQuestions,
+        startedAt: startedAt || null,
+        submittedAt,
+        timeTakenSeconds,
+        score: correctCount,        // back-compat
+        percentage,
+        completedAt: submittedAt    // back-compat
+      });
+      await attempt.save();
+      isNewBest = true;
+    }
 
     // Mark any in-progress session complete
     await Session.updateOne(
@@ -228,7 +287,16 @@ router.post('/submit', auth, async (req, res) => {
       totalQuestions,
       percentage,
       timeTakenSeconds,
-      attemptId: attempt._id
+      attemptId: attempt._id,
+      // isNewBest=true  → this submission was saved as the user's best
+      // isNewBest=false → this submission was discarded; the user's stored
+      //                   best is the previous one (returned for display)
+      isNewBest,
+      // Always return the user's stored best so the client can show both
+      // "what you got this attempt" and "your best so far"
+      bestCorrectCount: attempt.correctCount,
+      bestTimeTakenSeconds: attempt.timeTakenSeconds,
+      bestSubmittedAt: attempt.submittedAt
     });
   } catch (err) {
     console.error('Submit error:', err);
