@@ -12,6 +12,7 @@ app.use(express.json());
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/exam', require('./routes/exam'));
 app.use('/api/admin', require('./routes/admin'));
+app.use('/api/contact', require('./routes/contact'));
 
 // Test route
 app.get('/', (req, res) => {
