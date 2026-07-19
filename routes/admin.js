@@ -8,6 +8,7 @@ const Announcement = require('../models/Announcement');
 const Moderator = require('../models/Moderator');
 const Message = require('../models/Message');
 const { parseCsvWithHeaders } = require('../utils/csv');
+const autoGoLive = require('../utils/autoGoLive');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 
@@ -115,8 +116,13 @@ router.get('/subjects', adminAuth, requirePermission('tests'), async (req, res) 
 // ---------------------------------------------------------------
 
 // List all tests
+//
+// Auto-flip any 'coming_soon' tests whose scheduledAt has passed to
+// 'live' before serving the list, so the admin panel always reflects
+// the same state students see on the public tests page.
 router.get('/tests', adminAuth, requirePermission('tests'), async (req, res) => {
   try {
+    await autoGoLive();
     const tests = await Test.find()
       .select('-__v')
       .sort({ subject: 1, createdAt: 1 });
