@@ -71,10 +71,20 @@ router.get('/tests/:testId/questions', auth, async (req, res) => {
 
 // Get ranking for a specific test.
 // Sort: correctCount desc, timeTakenSeconds asc (nulls last), submittedAt asc.
+//
+// If the test has `showRanking: false`, students get 403 with
+// `{ message, hidden: true }`. The admin rankings.csv download in
+// routes/admin.js is NOT affected — admins always see rankings.
 router.get('/tests/:testId/ranking', async (req, res) => {
   try {
-    const test = await Test.findById(req.params.testId).select('name subject totalQuestions');
+    const test = await Test.findById(req.params.testId).select('name subject totalQuestions showRanking');
     if (!test) return res.status(404).json({ message: 'Test not found' });
+    if (test.showRanking === false) {
+      return res.status(403).json({
+        message: 'Ranking is hidden for this test.',
+        hidden: true
+      });
+    }
 
     const attempts = await Attempt.find({ test: test._id })
       .populate('user', 'name')
