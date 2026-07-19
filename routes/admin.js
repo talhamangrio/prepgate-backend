@@ -128,28 +128,35 @@ router.get('/tests', adminAuth, requirePermission('tests'), async (req, res) => 
 
 // Create test
 //
-// Body: { name, durationSec, status, scheduledAt }
+// Body: { name, durationSec, status, scheduledAt, showRanking, organiser }
 //   - subject is no longer required from the client (defaults to 'General');
 //     it's still accepted for backward-compat with older admin UIs
 //   - status: 'coming_soon' | 'live' (default 'live')
 //   - scheduledAt: ISO date string — when the test goes live (cosmetic;
 //     admin still has to manually flip status to 'live')
+//   - showRanking: boolean (default true) — when false, students get 403
+//     on /api/exam/tests/:id/ranking
+//   - organiser: { name, logoUrl, tagline, show } — optional per-test
+//     branding shown on the test-detail page. show defaults to false.
 router.post('/tests', adminAuth, requirePermission('tests'), async (req, res) => {
   try {
-    const { name, subject, durationSec, status, scheduledAt } = req.body;
+    const { name, subject, durationSec, status, scheduledAt, showRanking, organiser } = req.body;
     if (!name) {
       return res.status(400).json({ message: 'name is required' });
     }
     if (status && !['coming_soon', 'live'].includes(status)) {
       return res.status(400).json({ message: `status must be 'coming_soon' or 'live'` });
     }
+    const org = normaliseOrganiser(organiser);
     const test = new Test({
       name: String(name).trim(),
       subject: String(subject || 'General').trim(),
       durationSec: Number.isFinite(durationSec) && durationSec >= 60 ? Number(durationSec) : 3000,
       totalQuestions: 0,
       status: status || 'live',
-      scheduledAt: scheduledAt ? new Date(scheduledAt) : null
+      scheduledAt: scheduledAt ? new Date(scheduledAt) : null,
+      showRanking: showRanking === undefined ? true : !!showRanking,
+      organiser: org
     });
     await test.save();
     res.json(test);
@@ -158,11 +165,26 @@ router.post('/tests', adminAuth, requirePermission('tests'), async (req, res) =>
   }
 });
 
-// Update test metadata (name, duration, active, subject, status, scheduledAt)
+// Helper: coerce an arbitrary `organiser` payload from the client into the
+// shape defined on the Test schema. Tolerates missing/empty/partial input.
+function normaliseOrganiser(input) {
+  if (!input || typeof input !== 'object') {
+    return { name: '', logoUrl: '', tagline: '', show: false };
+  }
+  return {
+    name:    typeof input.name === 'string'    ? input.name.trim()    : '',
+    logoUrl: typeof input.logoUrl === 'string' ? input.logoUrl.trim() : '',
+    tagline: typeof input.tagline === 'string' ? input.tagline.trim() : '',
+    show:    !!input.show
+  };
+}
+
+// Update test metadata (name, duration, active, subject, status, scheduledAt,
+// showRanking, organiser)
 router.patch('/tests/:id', adminAuth, requirePermission('tests'), async (req, res) => {
   try {
     const update = {};
-    const allowed = ['name', 'subject', 'durationSec', 'active', 'status', 'scheduledAt'];
+    const allowed = ['name', 'subject', 'durationSec', 'active', 'status', 'scheduledAt', 'showRanking'];
     allowed.forEach(f => {
       if (req.body[f] !== undefined) update[f] = req.body[f];
     });
@@ -177,6 +199,10 @@ router.patch('/tests/:id', adminAuth, requirePermission('tests'), async (req, re
     }
     if (update.subject) update.subject = String(update.subject).trim();
     if (update.name) update.name = String(update.name).trim();
+    if (update.showRanking !== undefined) update.showRanking = !!update.showRanking;
+    if (req.body.organiser !== undefined) {
+      update.organiser = normaliseOrganiser(req.body.organiser);
+    }
     const test = await Test.findByIdAndUpdate(req.params.id, { $set: update }, { new: true });
     if (!test) return res.status(404).json({ message: 'Test not found' });
     res.json(test);
