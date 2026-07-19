@@ -21,9 +21,16 @@ const mongoose = require('mongoose');
  *         badge and "Start Test" / "View Ranking" buttons.
  *
  *   - `scheduledAt` (Date) — the public date the test is scheduled to go live.
- *     Used to render the countdown on coming-soon cards. Purely cosmetic —
- *     the admin still has to manually flip `status` to 'live' when ready;
- *     we never auto-flip.
+ *     Used to render the countdown on coming-soon cards. NOT purely
+ *     cosmetic anymore: a lazy auto-go-live helper
+ *     (utils/autoGoLive.js, invoked on every read of /api/exam/tests,
+ *     /api/exam/tests/:id, and /api/admin/tests) flips `status` from
+ *     'coming_soon' to 'live' the first time a read happens AFTER
+ *     `scheduledAt` has passed. The flip is persisted, so it only runs
+ *     once per test and the admin panel reflects the same state as the
+ *     student-facing tests page. If `scheduledAt` is null, the helper
+ *     leaves the test alone (admin must still flip manually in that
+ *     case).
  *
  * Questions, Attempts, and Sessions all reference a Test by `_id`.
  *

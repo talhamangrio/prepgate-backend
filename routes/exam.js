@@ -6,6 +6,7 @@ const Question = require('../models/Question');
 const Session = require('../models/Session');
 const Test = require('../models/Test');
 const Announcement = require('../models/Announcement');
+const autoGoLive = require('../utils/autoGoLive');
 const jwt = require('jsonwebtoken');
 
 // Auth middleware
@@ -25,8 +26,13 @@ const auth = (req, res, next) => {
 // ---------------------------------------------------------------
 
 // List all active tests. Optional ?subject=Math filter.
+//
+// First, lazily auto-flip any 'coming_soon' test whose scheduledAt is
+// in the past to 'live'. The flip is persisted (see utils/autoGoLive.js)
+// so it only runs once per test, and is safe to call on every read.
 router.get('/tests', async (req, res) => {
   try {
+    await autoGoLive();
     const filter = { active: true };
     if (req.query.subject) filter.subject = req.query.subject;
     const tests = await Test.find(filter)
@@ -39,8 +45,12 @@ router.get('/tests', async (req, res) => {
 });
 
 // Get one test (for the test-detail page)
+//
+// Auto-flip first so a student who opens the test-detail page exactly
+// at the scheduled time sees the test as 'live' without a page reload.
 router.get('/tests/:testId', async (req, res) => {
   try {
+    await autoGoLive();
     const test = await Test.findById(req.params.testId).select('-__v');
     if (!test) return res.status(404).json({ message: 'Test not found' });
     res.json(test);
